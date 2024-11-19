@@ -14,21 +14,17 @@ struct page {
     int ref_count; /* counter for shared pages */
 };
 
-struct thread_local_storage TLS_array[128];
+struct thread_local_storage* TLS_array[128];
 int tls_count = 0;
 
 
 /////////////////////////////////////
 // helper functions section start //
 ///////////////////////////////////
-void set_to_zero() {
-    memset(TLS_array, 0, 128 *
-                         sizeof(struct thread_local_storage)); // memset to ensure no random data is in the TLS array //TODO check if this is correctf
-}
 
 void tls_protect(struct page *p)
 {
-    if (mprotect((char*)(uintptr_t) p->address, 4096, 0)) { //TODO ask ta about uintptr
+    if (mprotect((char*)(uintptr_t) p->address, 4096, 0)) {
         fprintf(stderr, "tls_protect: could not protect page\n");
         exit(1);
     }
@@ -50,8 +46,9 @@ int calc_page_num(unsigned int size) {
 }
 
 int find_free_tls() {
-    for (int tls_id = 0; tls_id < 128; tls_id++) {
-        if (&(TLS_array[tls_id]) == 0) { //see if the tls is not allocated
+    int tls_id;
+    for (tls_id = 0; tls_id < 128; tls_id++) {
+        if (!(TLS_array[tls_id])) { //see if the tls is not allocated
             return tls_id;
         }
     }
@@ -59,9 +56,12 @@ int find_free_tls() {
 }
 
 int find_threads_tls(pthread_t current_thread) {
-    for (int tls_index; tls_index < 128; tls_index++) {
-        if ( TLS_array[tls_index].tid == current_thread ) {
-            return tls_index; // found the tls associated with the tls
+    int tls_index;
+    for (tls_index = 0; tls_index < 128; tls_index++) {
+        if (TLS_array[tls_index]) {
+            if (TLS_array[tls_index]->tid == current_thread) {
+                return tls_index; // found the tls associated with the tls
+            }
         }
     }
     //printf("Could not find the TLS associated with the current thread\n");
@@ -88,11 +88,6 @@ struct page* create_page_copy(struct page *shared_page) {
 //////////////////////////////////
 
 int tls_create(unsigned int size) {
-    if (tls_count == 0) {
-        set_to_zero();
-        tls_count++;
-    }
-
     pthread_t current_thread = pthread_self();
 
     if (find_threads_tls(current_thread) != -1) { //if the current thread already has a TLS associated with it...
@@ -121,23 +116,24 @@ int tls_create(unsigned int size) {
         return -1;
     }
 
-    for (int i = 0; i <= num_of_pages; i++) {
+    int i;
+    for (i = 0; i <= num_of_pages; i++) {
         struct page *p;
         p->address = (unsigned int)mmap(0,PAGESIZE, 0, MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
         p->ref_count = 1;
         new_tls->pages[i] = p;
     }
 
-    TLS_array[free_tls_index] = *new_tls;
+    TLS_array[free_tls_index] = new_tls;
     return 0;
 }
 
-int tls_write(unsigned int offset, unsigned int length, char* buffer) { //TODO implement tlc_protect and unprotect.
+int tls_write(unsigned int offset, unsigned int length, char* buffer) {
     char *local_buffer = buffer;
 
     int tls_index = find_threads_tls(pthread_self());
 
-    if ((length + offset) > TLS_array[tls_index].size) { //if the read operations is larger than the TLS allows...
+    if ((length + offset) > TLS_array[tls_index]->size) { //if the read operations is larger than the TLS allows...
         return -1; //return an error
     }
 
@@ -147,10 +143,11 @@ int tls_write(unsigned int offset, unsigned int length, char* buffer) { //TODO i
         int bytes_to_write = 4096 - offset_in_page;
 
 
-        tls_unprotect(TLS_array[tls_index].pages[page_index]);
-        char* dst = ((char *)(uintptr_t) (TLS_array[tls_index].pages[page_index]->address) + offset_in_page);
+        tls_unprotect(TLS_array[tls_index]->pages[page_index]);
+        char* dst = ((char *)(uintptr_t) (TLS_array[tls_index]->pages[page_index]->address) + offset_in_page);
 
-        for (int cnt = 0; (bytes_to_write > 0); ++cnt) { //for each individual byte in the last page
+        int cnt;
+        for (cnt = 0; (bytes_to_write > 0); ++cnt) { //for each individual byte in the last page
             // with trailing bytes
             bytes_to_write--;
             length--;
@@ -158,7 +155,7 @@ int tls_write(unsigned int offset, unsigned int length, char* buffer) { //TODO i
             *dst = local_buffer[cnt];
             dst = dst + 1;
         }
-        tls_protect(TLS_array[tls_index].pages[page_index]);
+        tls_protect(TLS_array[tls_index]->pages[page_index]);
     }
 
     int pages_num = calc_page_num(length) + page_index; //add a starting page num
@@ -168,7 +165,7 @@ int tls_write(unsigned int offset, unsigned int length, char* buffer) { //TODO i
 
     //whole page copy
     for (; page_index < pages_num; page_index++) {
-        struct page *cur_page = TLS_array[tls_index].pages[page_index];
+        struct page *cur_page = TLS_array[tls_index]->pages[page_index];
 
         if (cur_page->ref_count == 1) { //if there is no other thread that has access to this page
             tls_unprotect(cur_page);
@@ -197,30 +194,32 @@ int tls_write(unsigned int offset, unsigned int length, char* buffer) { //TODO i
 
         int trailing_bytes_pos = pages_num * 4096;
 
-        if (TLS_array[tls_index].pages[page_index]->ref_count == 1) { //if the page is not shared
-            tls_unprotect(TLS_array[tls_index].pages[page_index]);
-            char* dst = ((char *)(uintptr_t) TLS_array[tls_index].pages[page_index]->address);
+        if (TLS_array[tls_index]->pages[page_index]->ref_count == 1) { //if the page is not shared
+            tls_unprotect(TLS_array[tls_index]->pages[page_index]);
+            char* dst = ((char *)(uintptr_t) TLS_array[tls_index]->pages[page_index]->address);
 
-            for (int cnt = 0; cnt < (length - trailing_bytes_pos); ++cnt) { //for each individual byte in the last page
+            int cnt;
+            for (cnt = 0; cnt < (length - trailing_bytes_pos); ++cnt) { //for each individual byte in the last page
                                                                             // with trailing bytes
                 *dst = local_buffer[cnt];
                 dst = dst + 1;
             }
-            tls_protect(TLS_array[tls_index].pages[page_index]);
+            tls_protect(TLS_array[tls_index]->pages[page_index]);
         }
 
         else { //if the page is shared
 
-            struct page *new_page = create_page_copy(TLS_array[tls_index].pages[page_index]); //create a new page
+            struct page *new_page = create_page_copy(TLS_array[tls_index]->pages[page_index]); //create a new page
             tls_unprotect(new_page);
             char* dst = ((char *)(uintptr_t) new_page->address); //declaring the destination byte
-            for (int cnt = 0; cnt < (length - trailing_bytes_pos); ++cnt) { //for each individual byte in the last page
+            int cnt;
+            for (cnt = 0; cnt < (length - trailing_bytes_pos); ++cnt) { //for each individual byte in the last page
                                                                             // with trailing bytes
                 *dst = local_buffer[cnt];
                 dst = dst + 1;
             }
-            TLS_array[tls_index].pages[page_index]->ref_count--; //TODO ask TAs if this is correct
-            TLS_array[tls_index].pages[page_index] = new_page;
+            TLS_array[tls_index]->pages[page_index]->ref_count--; //TODO ask TAs if this is correct
+            TLS_array[tls_index]->pages[page_index] = new_page;
             tls_protect(new_page);
         }
     }
@@ -235,7 +234,7 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer) {
         return -1;
     }
 
-    if ((length + offset) > TLS_array[tls_index].size) { //if the read operations is larger than the TLS allows...
+    if ((length + offset) > TLS_array[tls_index]->size) { //if the read operations is larger than the TLS allows...
         return -1; //return an error
     }
 
@@ -244,10 +243,11 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer) {
     if (offset_in_page != 0) {
         int bytes_to_read = 4096 - offset_in_page;
 
-        tls_unprotect(TLS_array[tls_index].pages[page_index]);
-        char* src = ((char *)(uintptr_t) (TLS_array[tls_index].pages[page_index]->address) + offset_in_page);
+        tls_unprotect(TLS_array[tls_index]->pages[page_index]);
+        char* src = ((char *)(uintptr_t) (TLS_array[tls_index]->pages[page_index]->address) + offset_in_page);
 
-        for (int cnt = 0; (bytes_to_read > 0); ++cnt) { //for each individual byte in the last page
+        int cnt;
+        for (cnt = 0; (bytes_to_read > 0); ++cnt) { //for each individual byte in the last page
             // with trailing bytes
             bytes_to_read--;
             length--;
@@ -255,7 +255,7 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer) {
             local_buffer[cnt] = *src;
             src = src + 1;
         }
-        tls_protect(TLS_array[tls_index].pages[page_index]);
+        tls_protect(TLS_array[tls_index]->pages[page_index]);
     }
 
     int pages_num = calc_page_num(length) + page_index;
@@ -266,7 +266,7 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer) {
 
     //whole page copy
     for (; page_index < pages_num; page_index++) {
-        struct page *cur_page = TLS_array[tls_index].pages[page_index];
+        struct page *cur_page = TLS_array[tls_index]->pages[page_index];
         tls_unprotect(cur_page);
         memcpy( local_buffer, (void *)(uintptr_t) cur_page->address, 4096);
         tls_protect(cur_page);
@@ -278,14 +278,15 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer) {
 
         int trailing_bytes_pos = pages_num * 4096;
 
-        tls_unprotect(TLS_array[tls_index].pages[page_index]);
-        char* src = ((char *)(uintptr_t) TLS_array[tls_index].pages[page_index]->address);
-        for (int cnt = trailing_bytes_pos; cnt < length; cnt++) { //for each individual byte in the last page
+        tls_unprotect(TLS_array[tls_index]->pages[page_index]);
+        char* src = ((char *)(uintptr_t) TLS_array[tls_index]->pages[page_index]->address);
+        int cnt;
+        for (cnt = trailing_bytes_pos; cnt < length; cnt++) { //for each individual byte in the last page
             // with trailing bytes
             local_buffer[cnt] = *src; //TLS_array[tls_index].pages[page_index]->address[cnt];
             src = src + 1;
         }
-        tls_protect(TLS_array[tls_index].pages[page_index]);
+        tls_protect(TLS_array[tls_index]->pages[page_index]);
     }
     return 0;
 }
@@ -317,27 +318,28 @@ int tls_clone(pthread_t tid) {
 
 
 
-    new_tls->size = TLS_array[target_tls_id].size;
-    new_tls->page_num = TLS_array[target_tls_id].page_num;
+    new_tls->size = TLS_array[target_tls_id]->size;
+    new_tls->page_num = TLS_array[target_tls_id]->page_num;
     new_tls->tid = current_thread;
-    new_tls->pages = malloc(sizeof(TLS_array[target_tls_id].pages));
+    new_tls->pages = malloc(sizeof(TLS_array[target_tls_id]->pages));
     if (new_tls->pages == NULL) { //check if the malloc has failed
         printf("could not allocate the array of pages for the tls\n");
         return -1;
     }
 
-    for (int i = 0; i <= new_tls->page_num; i++) {
-        tls_unprotect(TLS_array[target_tls_id].pages[i]);
+    int i;
+    for (i = 0; i <= new_tls->page_num; i++) {
+        tls_unprotect(TLS_array[target_tls_id]->pages[i]);
         tls_unprotect(new_tls->pages[i]);
 
-        TLS_array[target_tls_id].pages[i]->ref_count++;
-        new_tls->pages[i] = TLS_array[target_tls_id].pages[i];
+        TLS_array[target_tls_id]->pages[i]->ref_count++;
+        new_tls->pages[i] = TLS_array[target_tls_id]->pages[i];
 
         tls_protect(new_tls->pages[i]);
-        tls_protect(TLS_array[target_tls_id].pages[i]);
+        tls_protect(TLS_array[target_tls_id]->pages[i]);
     }
 
-    TLS_array[free_tls_index] = *new_tls;
+    TLS_array[free_tls_index] = new_tls;
     return 0;
 }
 
@@ -347,15 +349,16 @@ int tls_destroy() {
         return -1; //return an error
     }
 
-    int num_pages = TLS_array[tls_index].page_num;
+    int num_pages = TLS_array[tls_index]->page_num;
 
-    for (int page_index = 0; page_index < num_pages; page_index++){
-        tls_unprotect(TLS_array[tls_index].pages[page_index]);
+    int page_index;
+    for (page_index = 0; page_index < num_pages; page_index++){
+        tls_unprotect(TLS_array[tls_index]->pages[page_index]);
 
-        TLS_array[tls_index].pages[page_index]->ref_count--;
-        if (TLS_array[tls_index].pages[page_index]->ref_count == 0) {
-            free(TLS_array[tls_index].pages[page_index]);
-        } else { tls_protect(TLS_array[tls_index].pages[page_index]);}
+        TLS_array[tls_index]->pages[page_index]->ref_count--;
+        if (TLS_array[tls_index]->pages[page_index]->ref_count == 0) {
+            free(TLS_array[tls_index]->pages[page_index]);
+        } else { tls_protect(TLS_array[tls_index]->pages[page_index]);}
 
     }
     return 0;
