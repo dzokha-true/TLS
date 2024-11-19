@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <perror.h>
 
 int tls_create(unsigned int size);
 int tls_write(unsigned int offset, unsigned int length, char *buffer);

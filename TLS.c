@@ -25,7 +25,8 @@ int tls_count = 0;
 void tls_protect(struct page *p)
 {
     if (mprotect((char*)(uintptr_t) p->address, 4096, 0)) {
-        fprintf(stderr, "tls_protect: could not protect page\n");
+        /*fprintf(stderr, "tls_protect: could not protect page\n");*/
+        perror("tls_protect: could not protect page");
         exit(1);
     }
 }
@@ -33,7 +34,8 @@ void tls_protect(struct page *p)
 void tls_unprotect(struct page *p)
 {
     if (mprotect((char*)(uintptr_t) p->address, 4096, PROT_READ | PROT_WRITE)) {
-        fprintf(stderr, "tls_unprotect: could not unprotect page\n");
+        /*fprintf(stderr, "tls_unprotect: could not unprotect page\n");*/
+        perror("tls_unprotect: could not protect page");
         exit(1);
     }
 }
@@ -121,8 +123,10 @@ int tls_create(unsigned int size) {
         struct page *p = calloc(1, sizeof(struct page));
         p->address = (unsigned int)(uintptr_t)mmap(0,PAGESIZE, 0, MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
         p->ref_count = 1;
+        tls_protect(p);
         new_tls->pages[i] = p;
     }
+
 
     TLS_array[free_tls_index] = new_tls;
     return 0;
@@ -141,7 +145,6 @@ int tls_write(unsigned int offset, unsigned int length, char* buffer) {
     int offset_in_page = offset % 4096;
     if (offset_in_page != 0) {
         int bytes_to_write = 4096 - offset_in_page;
-
 
         tls_unprotect(TLS_array[tls_index]->pages[page_index]);
         char* dst = ((char *)(uintptr_t) (TLS_array[tls_index]->pages[page_index]->address) + offset_in_page);
