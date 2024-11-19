@@ -72,7 +72,7 @@ struct page* create_page_copy(struct page *shared_page) {
     tls_unprotect(shared_page);
     struct page *new_page = calloc(1, sizeof(struct page));
 
-    new_page->address = mmap(0,PAGESIZE, 0, MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
+    new_page->address = (unsigned int)(uintptr_t)mmap(0,PAGESIZE, 0, MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
     tls_unprotect(new_page);
 
     memcpy((void*)(uintptr_t) new_page->address, (void *)(uintptr_t) shared_page->address, 4096);
@@ -118,8 +118,8 @@ int tls_create(unsigned int size) {
 
     int i;
     for (i = 0; i <= num_of_pages; i++) {
-        struct page *p;
-        p->address = (unsigned int)mmap(0,PAGESIZE, 0, MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
+        struct page *p = calloc(1, sizeof(struct page));
+        p->address = (unsigned int)(uintptr_t)mmap(0,PAGESIZE, 0, MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
         p->ref_count = 1;
         new_tls->pages[i] = p;
     }
@@ -182,7 +182,7 @@ int tls_write(unsigned int offset, unsigned int length, char* buffer) {
 
             tls_unprotect(new_page);
             memcpy((void *)(uintptr_t) new_page->address, local_buffer, 4096);
-            TLS_array[tls_index].pages[page_index] = new_page; //change the shared page to the new page
+            TLS_array[tls_index]->pages[page_index] = new_page; //change the shared page to the new page
             tls_protect(new_page);
         }
         local_buffer = local_buffer + 4096; //increment the buffer we are reading from.
