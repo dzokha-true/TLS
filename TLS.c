@@ -75,6 +75,7 @@ struct page* create_page_copy(struct page *shared_page) {
 
     new_page->address = mmap(0,PAGESIZE, 0, MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
     tls_unprotect(new_page);
+    memset(new_page->address, 0, 4096);
 
     memcpy((void*) new_page->address, (void *)shared_page->address, 4096);
     new_page->ref_count = 1;
@@ -118,9 +119,11 @@ int tls_create(unsigned int size) {
     }
 
     int i;
-    for (i = 0; i <= num_of_pages; i++) {
+    for (i = 0; i < num_of_pages; i++) {
         struct page *p = calloc(1, sizeof(struct page));
         p->address = mmap(0,PAGESIZE, 0, MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
+        tls_unprotect(p);
+        memset(p->address, 0, 4096);
         p->ref_count = 1;
         tls_protect(p);
         new_tls->pages[i] = p;
@@ -206,7 +209,7 @@ int tls_write(unsigned int offset, unsigned int length, char* buffer) {
 
     //in case there are trailing bytes
     if (length % 4096 != 0) { // check whether we should write any trailing bytes
-        if (!for_happened) { //if there was no for loop allocation, we do not need to increment page_index
+        if (for_happened) { //if there was no for loop allocation, we do not need to increment page_index
             page_index++;              //since it was incremented already before the for loop
         }
         int bytes_to_write = length % 4096;
@@ -266,6 +269,7 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer) {
 
         local_buffer = local_buffer + bytes_to_read;
         length = length - bytes_to_read;
+        page_index++;
     }
 
     int pages_num = calc_page_num(length) + page_index;
@@ -286,18 +290,18 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer) {
 
     //in case there are trailing bytes
     if (length % 4096 != 0) { // check whether we should write any trailing bytes
-        if (!for_happened) {
+        if (for_happened) {
             page_index++; //move to the next page
         }
-        
+
         int bytes_to_write = length % 4096;
         struct page *cur_page = TLS_array[tls_index]->pages[page_index];
-        
+
         tls_unprotect(TLS_array[tls_index]->pages[page_index]);
         char* src = ((char *) cur_page->address);
 
         memcpy(local_buffer, src,  bytes_to_write);
-        
+
         tls_protect(TLS_array[tls_index]->pages[page_index]);
     }
     return 0;
@@ -309,7 +313,7 @@ int tls_clone(pthread_t tid) {
     if (find_threads_tls(current_thread) != -1) { //if the current thread already has a TLS associated with it...
         return -1; // return an error (only create if thread does not already have a tls)
     }
-    
+
     int target_tls_id = find_threads_tls(tid);
     if (target_tls_id == -1) { //if the target thread does not have a TLS associated with it...
         return -1; // return an error (only create if thread does not already have a tls)
